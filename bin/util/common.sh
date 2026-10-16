@@ -118,17 +118,7 @@ get_project_sln_name() {
 # args:
 # input - $1
 get_project_file() {
-	local projectfile=""
-	local all_projects=$(x=$(dirname $(find $1 -maxdepth 2 -type f | head -1)); while [[ "$x" =~ $1 ]] ; do find "$x" -maxdepth 1 -name *.csproj; x=`dirname "$x"`; done)
-	
-	# Filter out WorkerApp projects and get the first non-WorkerApp project
-	for project in $all_projects; do
-		if [[ "$(is_worker_app_project "$project")" == "no" ]]; then
-			projectfile="$project"
-			break
-		fi
-	done
-	
+	local projectfile=$(x=$(dirname $(find $1 -maxdepth 2 -type f | head -1)); while [[ "$x" =~ $1 ]] ; do find "$x" -maxdepth 1 -name *.csproj; x=`dirname "$x"`; done)
 	echo $projectfile
 }
 
@@ -203,100 +193,4 @@ source_envfile() { export $(cat $1 | sed -e /^$/d -e /^#/d | xargs); }
 # input - $1, $2
 decimal_compare() {
    awk -v n1="$1" -v n2="$2" 'BEGIN {printf "%s " "$3" " %s\n", n1, n2}'
-}
-
-# args:
-# input - $1
-has_worker_app_project() {
-	local build_dir=$1
-	# Look for any folder that contains "WorkerApp" in its name
-	local worker_folder=$(find "$build_dir" -maxdepth 1 -type d -name "*WorkerApp*" | head -1)
-	if [[ -n "$worker_folder" ]] && [[ -f "$worker_folder/$(basename "$worker_folder").csproj" ]]; then
-		echo "yes"
-	else
-		echo "no"
-	fi
-}
-
-# args:
-# input - $1
-should_add_worker_dyno() {
-	local build_dir=$1
-	local has_worker_app=$(has_worker_app_project "$build_dir")
-	
-	if [[ "$has_worker_app" == "yes" ]]; then
-		echo "yes"
-	else
-		echo "no"
-	fi
-}
-
-# args:
-# input - $1
-get_worker_assembly_name() {
-	local build_dir=$1
-	local worker_assembly=""
-	
-	# Look for any folder that contains "WorkerApp" in its name
-	local worker_folder=$(find "$build_dir" -maxdepth 1 -type d -name "*WorkerApp*" | head -1)
-	if [[ -n "$worker_folder" ]] && [[ -f "$worker_folder/$(basename "$worker_folder").csproj" ]]; then
-		worker_assembly=$(basename "$worker_folder")
-	fi
-	
-	echo "$worker_assembly"
-}
-
-# args:
-# input - $1
-is_worker_app_project() {
-	local project_path=$1
-	local project_name=$(basename "$project_path" .csproj)
-	
-	# Check if the project name contains "WorkerApp"
-	if [[ "$project_name" == *"WorkerApp"* ]]; then
-		echo "yes"
-	else
-		echo "no"
-	fi
-}
-
-# Make the dotnet CLI first-run experience safe inside the Heroku build container.
-# The SDK runs NuGet's migration step on the first CLI invocation for a given SDK
-# version, and that step takes a named mutex ("NuGet-Migrations"). Named mutexes are
-# backed by files under /tmp/.dotnet, which this container cannot always create, so the
-# command dies with:
-#   System.IO.IOException: The system cannot open the device or file specified. : 'NuGet-Migrations'
-# NuGet skips the mutex completely once the migration marker file exists, so create it
-# up front, make the mutex directories usable, and drop the first-run sentinels for the
-# installed SDK.
-# args:
-# input - $1
-harden_dotnet_first_run() {
-	local build_dir="${1:-}"
-	local migrations_dir sentinel_dir sdk_version
-
-	export DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
-	export DOTNET_GENERATE_ASPNET_CERTIFICATE="${DOTNET_GENERATE_ASPNET_CERTIFICATE:-false}"
-	export DOTNET_ADD_GLOBAL_TOOLS_TO_PATH="${DOTNET_ADD_GLOBAL_TOOLS_TO_PATH:-false}"
-	export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK="${DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK:-1}"
-
-	# NuGet.Common.Migrations.MigrationRunner only creates the mutex when this file is missing
-	migrations_dir="${XDG_DATA_HOME:-$HOME/.local/share}/NuGet/Migrations"
-	mkdir -p "$migrations_dir" 2>/dev/null || true
-	[[ -f "$migrations_dir/1" ]] || ( : > "$migrations_dir/1" ) 2>/dev/null || true
-
-	# Backing store for every named mutex the build may use (NuGet, Roslyn build server)
-	mkdir -p /tmp/.dotnet/shm /tmp/.dotnet/lockfiles 2>/dev/null || true
-	chmod -R 777 /tmp/.dotnet 2>/dev/null || true
-
-	# Sentinels are version stamped, so a new SDK patch re-runs the first-run path
-	sentinel_dir="${DOTNET_CLI_HOME:-$HOME}/.dotnet"
-	mkdir -p "$sentinel_dir" 2>/dev/null || true
-	if [[ -d "$build_dir/.dotnet/sdk" ]]; then
-		for sdk_version in $(ls "$build_dir/.dotnet/sdk" 2>/dev/null); do
-			touch "$sentinel_dir/${sdk_version}.dotnetFirstUseSentinel" 2>/dev/null || true
-			touch "$sentinel_dir/${sdk_version}.aspNetCertificateSentinel" 2>/dev/null || true
-			touch "$sentinel_dir/${sdk_version}.toolpath.sentinel" 2>/dev/null || true
-		done
-	fi
 }
