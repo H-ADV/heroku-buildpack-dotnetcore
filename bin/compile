@@ -87,6 +87,9 @@ fi
 # Add dotnet runtime path to environment variable that is available to access dotnet command
 export PATH="$PATH:$HOME/.dotnet"
 
+# Make the SDK first-run experience safe in this container before any dotnet CLI call
+harden_dotnet_first_run "$BUILD_DIR"
+
 ## List installed dotnet runtimes
 #dotnet --list-runtimes
 
@@ -103,6 +106,14 @@ echo 'export INCLUDE_PATH="$INCLUDE_PATH:$HOME/.apt/usr/include"' >> $PROFILE_PA
 echo 'export CPATH="$INCLUDE_PATH"' >> $PROFILE_PATH
 echo 'export CPPPATH="$INCLUDE_PATH"' >> $PROFILE_PATH
 echo "export DOTNET_CLI_TELEMETRY_OPTOUT=1" >> $PROFILE_PATH
+echo "export DOTNET_NOLOGO=1" >> $PROFILE_PATH
+echo "export DOTNET_GENERATE_ASPNET_CERTIFICATE=false" >> $PROFILE_PATH
+echo "export DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false" >> $PROFILE_PATH
+# Same NuGet first-run guard for dynos that invoke the dotnet CLI
+echo 'NUGET_MIGRATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/NuGet/Migrations"' >> $PROFILE_PATH
+echo 'mkdir -p "$NUGET_MIGRATIONS_DIR" 2>/dev/null || true' >> $PROFILE_PATH
+echo '[ -f "$NUGET_MIGRATIONS_DIR/1" ] || ( : > "$NUGET_MIGRATIONS_DIR/1" ) 2>/dev/null || true' >> $PROFILE_PATH
+echo 'mkdir -p /tmp/.dotnet/shm /tmp/.dotnet/lockfiles 2>/dev/null || true' >> $PROFILE_PATH
 #echo "export IS_POSTGRES_USED=\"$(is_postgres_used $BUILD_DIR)\"" >> $PROFILE_PATH
 
 # Get solution file from build directory
