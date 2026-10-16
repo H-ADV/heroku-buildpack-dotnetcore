@@ -28,12 +28,22 @@ export_env_dir "$ENV_DIR"
 
 ### Local variable declaration
 declare herokuos_version framework_version runtime_framework_version
+declare should_add_worker worker_assembly_name
 
 # Get OS
 herokuos_version="$(get_linux_platform_version)"
 
 print "OS: Ubuntu $herokuos_version"
 print "Stack version: ${STACK}"
+
+# Check if worker dyno should be added
+should_add_worker="$(should_add_worker_dyno $BUILD_DIR)"
+if [[ "$should_add_worker" == "yes" ]]; then
+	worker_assembly_name="$(get_worker_assembly_name $BUILD_DIR)"
+	print "Worker dyno detected. Worker assembly: ${worker_assembly_name}"
+else
+	print "No worker dyno detected"
+fi
 
 print "Installing prerequisites for .NET Core on Ubuntu"
 if [[ $herokuos_version == "16.04" ]]; then
@@ -87,6 +97,9 @@ fi
 # Add dotnet runtime path to environment variable that is available to access dotnet command
 export PATH="$PATH:$HOME/.dotnet"
 
+# Make the SDK first-run experience safe in this container before any dotnet CLI call
+harden_dotnet_first_run "$BUILD_DIR"
+
 ## List installed dotnet runtimes
 #dotnet --list-runtimes
 
@@ -103,6 +116,14 @@ echo 'export INCLUDE_PATH="$INCLUDE_PATH:$HOME/.apt/usr/include"' >> $PROFILE_PA
 echo 'export CPATH="$INCLUDE_PATH"' >> $PROFILE_PATH
 echo 'export CPPPATH="$INCLUDE_PATH"' >> $PROFILE_PATH
 echo "export DOTNET_CLI_TELEMETRY_OPTOUT=1" >> $PROFILE_PATH
+echo "export DOTNET_NOLOGO=1" >> $PROFILE_PATH
+echo "export DOTNET_GENERATE_ASPNET_CERTIFICATE=false" >> $PROFILE_PATH
+echo "export DOTNET_ADD_GLOBAL_TOOLS_TO_PATH=false" >> $PROFILE_PATH
+# Same NuGet first-run guard for release/worker dynos that invoke the dotnet CLI
+echo 'NUGET_MIGRATIONS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/NuGet/Migrations"' >> $PROFILE_PATH
+echo 'mkdir -p "$NUGET_MIGRATIONS_DIR" 2>/dev/null || true' >> $PROFILE_PATH
+echo '[ -f "$NUGET_MIGRATIONS_DIR/1" ] || ( : > "$NUGET_MIGRATIONS_DIR/1" ) 2>/dev/null || true' >> $PROFILE_PATH
+echo 'mkdir -p /tmp/.dotnet/shm /tmp/.dotnet/lockfiles 2>/dev/null || true' >> $PROFILE_PATH
 #echo "export IS_POSTGRES_USED=\"$(is_postgres_used $BUILD_DIR)\"" >> $PROFILE_PATH
 
 # Get solution file from build directory
@@ -151,12 +172,37 @@ else
 	dotnet publish $SOLUTION_FILE --output $BUILD_DIR/$RELEASE_DIR --configuration Release --runtime linux-x64 --no-self-contained
 fi
 
+# Build worker project if worker dyno should be added
+if [[ "$should_add_worker" == "yes" ]] && [[ -n "$worker_assembly_name" ]]; then
+	print "Building worker project: ${worker_assembly_name}"
+	
+	# Find and build any WorkerApp project
+	worker_folder=$(find "$BUILD_DIR" -maxdepth 1 -type d -name "*WorkerApp*" | head -1)
+	worker_project="$worker_folder/$(basename "$worker_folder").csproj"
+	if [[ -f "$worker_project" ]]; then
+		print "Publishing worker project: ${worker_project}"
+		dotnet publish "$worker_project" --output "$BUILD_DIR/${worker_assembly_name}_Release" --configuration Release --runtime linux-x64 --no-self-contained
+	fi
+fi
+
 # Remove src files in production machine
-find -maxdepth 1 ! -name Procfile ! -name .profile.d ! -name .apt ! -name .dotnet ! -name .heroku ! -name node_modules ! -name $RELEASE_DIR  -exec rm -rv {} \; > /dev/null 2>&1;
+if [[ "$should_add_worker" == "yes" ]] && [[ -n "$worker_assembly_name" ]]; then
+	find -maxdepth 1 ! -name Procfile ! -name .profile.d ! -name .apt ! -name .dotnet ! -name .heroku ! -name node_modules ! -name $RELEASE_DIR ! -name ${worker_assembly_name}_Release -exec rm -rv {} \; > /dev/null 2>&1;
+else
+	find -maxdepth 1 ! -name Procfile ! -name .profile.d ! -name .apt ! -name .dotnet ! -name .heroku ! -name node_modules ! -name $RELEASE_DIR  -exec rm -rv {} \; > /dev/null 2>&1;
+fi
 
 if [[ ! -z "$APP_ASSEMBLY" ]]; then
 # Create procfile and Add process type to that 
 cat << EOT >> ${BUILD_DIR}/Procfile
     web: cd \$HOME/$RELEASE_DIR && dotnet "./$APP_ASSEMBLY.dll" --urls http://+:\$PORT
+EOT
+fi
+
+# Add worker dyno to Procfile if worker should be added
+if [[ "$should_add_worker" == "yes" ]] && [[ -n "$worker_assembly_name" ]]; then
+	print "Adding worker dyno to Procfile: ${worker_assembly_name}"
+	cat << EOT >> ${BUILD_DIR}/Procfile
+    worker: cd \$HOME/${worker_assembly_name}_Release && dotnet "./$worker_assembly_name.dll"
 EOT
 fi
