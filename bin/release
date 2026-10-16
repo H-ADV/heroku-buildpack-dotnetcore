@@ -14,6 +14,13 @@ source "$BP_DIR/bin/util/common.sh"
 ### Export all env vars here
 . $BUILD_DIR/.profile.d/dotnetcore.sh
 
+### Check for worker dyno
+should_add_worker="$(should_add_worker_dyno $BUILD_DIR)"
+worker_assembly_name=""
+if [[ "$should_add_worker" == "yes" ]]; then
+	worker_assembly_name="$(get_worker_assembly_name $BUILD_DIR)"
+fi
+
 cat <<EOF
 ---
 config_vars:
@@ -32,4 +39,9 @@ default_process_types:
 EOF
 echo "  release: cd \$HOME/$RELEASE_DIR && dotnet ef database update --startup-project ..\HADV.OMS.CentralAPI --context AppDbContext"
 echo "  web: cd \$HOME/$RELEASE_DIR && dotnet \"./${APP_ASSEMBLY}.dll\" --urls http://+:\$PORT"
+
+# Add worker dyno to default process types if worker should be added
+if [[ "$should_add_worker" == "yes" ]] && [[ -n "$worker_assembly_name" ]]; then
+	echo "  worker: cd \$HOME/${worker_assembly_name}_Release && dotnet \"./${worker_assembly_name}.dll\""
+fi
 fi
