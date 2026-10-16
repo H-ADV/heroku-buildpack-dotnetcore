@@ -194,3 +194,45 @@ source_envfile() { export $(cat $1 | sed -e /^$/d -e /^#/d | xargs); }
 decimal_compare() {
    awk -v n1="$1" -v n2="$2" 'BEGIN {printf "%s " "$3" " %s\n", n1, n2}'
 }
+
+
+# Make the dotnet CLI first-run experience safe inside the Heroku build container.
+# The SDK runs NuGet's migration step on the first CLI invocation for a given SDK
+# version, and that step takes a named mutex ("NuGet-Migrations"). Named mutexes are
+# backed by files under /tmp/.dotnet, which this container cannot always create, so the
+# command dies with:
+#   System.IO.IOException: The system cannot open the device or file specified. : 'NuGet-Migrations'
+# NuGet skips the mutex completely once the migration marker file exists, so create it
+# up front, make the mutex directories usable, and drop the first-run sentinels for the
+# installed SDK.
+# args:
+# input - $1
+harden_dotnet_first_run() {
+	local build_dir="${1:-}"
+	local migrations_dir sentinel_dir sdk_version
+
+	export DOTNET_NOLOGO="${DOTNET_NOLOGO:-1}"
+	export DOTNET_GENERATE_ASPNET_CERTIFICATE="${DOTNET_GENERATE_ASPNET_CERTIFICATE:-false}"
+	export DOTNET_ADD_GLOBAL_TOOLS_TO_PATH="${DOTNET_ADD_GLOBAL_TOOLS_TO_PATH:-false}"
+	export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK="${DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK:-1}"
+
+	# NuGet.Common.Migrations.MigrationRunner only creates the mutex when this file is missing
+	migrations_dir="${XDG_DATA_HOME:-$HOME/.local/share}/NuGet/Migrations"
+	mkdir -p "$migrations_dir" 2>/dev/null || true
+	[[ -f "$migrations_dir/1" ]] || ( : > "$migrations_dir/1" ) 2>/dev/null || true
+
+	# Backing store for every named mutex the build may use (NuGet, Roslyn build server)
+	mkdir -p /tmp/.dotnet/shm /tmp/.dotnet/lockfiles 2>/dev/null || true
+	chmod -R 777 /tmp/.dotnet 2>/dev/null || true
+
+	# Sentinels are version stamped, so a new SDK patch re-runs the first-run path
+	sentinel_dir="${DOTNET_CLI_HOME:-$HOME}/.dotnet"
+	mkdir -p "$sentinel_dir" 2>/dev/null || true
+	if [[ -d "$build_dir/.dotnet/sdk" ]]; then
+		for sdk_version in $(ls "$build_dir/.dotnet/sdk" 2>/dev/null); do
+			touch "$sentinel_dir/${sdk_version}.dotnetFirstUseSentinel" 2>/dev/null || true
+			touch "$sentinel_dir/${sdk_version}.aspNetCertificateSentinel" 2>/dev/null || true
+			touch "$sentinel_dir/${sdk_version}.toolpath.sentinel" 2>/dev/null || true
+		done
+	fi
+}
